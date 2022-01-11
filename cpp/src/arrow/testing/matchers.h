@@ -168,7 +168,7 @@ class ErrorMatcher {
         if (match) {
           *listener << "whose error matches";
         } else if (status.ok()) {
-          *listener << "whose value doesn't match";
+          *listener << "whose non-error doesn't match";
         } else {
           *listener << "whose error doesn't match";
         }
@@ -203,8 +203,7 @@ class OkMatcher {
         const Status& status = internal::GenericToStatus(maybe_value);
 
         const bool match = status.ok();
-        *listener << "whose value " << testing::PrintToString(status.ToString())
-                  << (match ? " matches" : " doesn't match");
+        *listener << "whose " << (match ? "non-error matches" : "error doesn't match");
         return match;
       }
     };
