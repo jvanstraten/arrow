@@ -35,7 +35,15 @@
 #include "generated/substrait/expression.pb.h"  // IWYU pragma: export
 
 namespace arrow {
+
+using internal::checked_cast;
+
 namespace engine {
+
+namespace internal {
+using ::arrow::internal::make_unique;
+}  // namespace internal
+
 namespace {
 
 std::shared_ptr<FixedSizeBinaryScalar> FixedSizeBinaryScalarFromBytes(
@@ -429,7 +437,7 @@ struct ToProtoImpl {
   Status Visit(const Date64Scalar& s) { return Primitive(&Lit::set_date, s); }
 
   Status Visit(const TimestampScalar& s) {
-    const auto& t = internal::checked_cast<const TimestampType&>(*s.type);
+    const auto& t = checked_cast<const TimestampType&>(*s.type);
 
     if (t.unit() != TimeUnit::MICRO) return NotImplemented(s);
 
@@ -444,7 +452,7 @@ struct ToProtoImpl {
 
   Status Visit(const Time32Scalar& s) { return NotImplemented(s); }
   Status Visit(const Time64Scalar& s) {
-    if (internal::checked_cast<const Time64Type&>(*s.type).unit() != TimeUnit::MICRO) {
+    if (checked_cast<const Time64Type&>(*s.type).unit() != TimeUnit::MICRO) {
       return NotImplemented(s);
     }
     return Primitive(&Lit::set_time, s);
@@ -456,7 +464,7 @@ struct ToProtoImpl {
   Status Visit(const Decimal128Scalar& s) {
     auto decimal = internal::make_unique<Lit::Decimal>();
 
-    auto decimal_type = internal::checked_cast<const Decimal128Type*>(s.type.get());
+    auto decimal_type = checked_cast<const Decimal128Type*>(s.type.get());
     decimal->set_precision(decimal_type->precision());
     decimal->set_scale(decimal_type->scale());
 
@@ -482,7 +490,7 @@ struct ToProtoImpl {
 
     lit_->set_allocated_list(new Lit::List());
 
-    const auto& list_type = internal::checked_cast<const ListType&>(*s.type);
+    const auto& list_type = checked_cast<const ListType&>(*s.type);
     ARROW_ASSIGN_OR_RAISE(
         auto element_type,
         ToProto(*list_type.value_type(), list_type.value_field()->nullable(), &ext_set));
@@ -525,7 +533,7 @@ struct ToProtoImpl {
 
     lit_->set_allocated_map(new Lit::Map());
 
-    const auto& kv_arr = internal::checked_cast<const StructArray&>(*s.value);
+    const auto& kv_arr = checked_cast<const StructArray&>(*s.value);
 
     auto key_values = lit_->mutable_map()->mutable_key_values();
     key_values->Reserve(static_cast<int>(kv_arr.length()));
@@ -549,28 +557,26 @@ struct ToProtoImpl {
   Status Visit(const ExtensionScalar& s) {
     if (UnwrapUuid(*s.type)) {
       return FromBuffer(&Lit::set_uuid,
-                        internal::checked_cast<const FixedSizeBinaryScalar&>(*s.value));
+                        checked_cast<const FixedSizeBinaryScalar&>(*s.value));
     }
 
     if (UnwrapFixedChar(*s.type)) {
       return FromBuffer(&Lit::set_fixed_char,
-                        internal::checked_cast<const FixedSizeBinaryScalar&>(*s.value));
+                        checked_cast<const FixedSizeBinaryScalar&>(*s.value));
     }
 
     if (auto length = UnwrapVarChar(*s.type)) {
       auto var_char = internal::make_unique<Lit::VarChar>();
       var_char->set_length(*length);
-      var_char->set_value(
-          internal::checked_cast<const StringScalar&>(*s.value).value->ToString());
+      var_char->set_value(checked_cast<const StringScalar&>(*s.value).value->ToString());
 
       lit_->set_allocated_var_char(var_char.release());
       return Status::OK();
     }
 
     auto GetPairOfInts = [&] {
-      const auto& array =
-          *internal::checked_cast<const FixedSizeListScalar&>(*s.value).value;
-      auto ints = internal::checked_cast<const Int32Array&>(array).raw_values();
+      const auto& array = *checked_cast<const FixedSizeListScalar&>(*s.value).value;
+      auto ints = checked_cast<const Int32Array&>(array).raw_values();
       return std::make_pair(ints[0], ints[1]);
     };
 
