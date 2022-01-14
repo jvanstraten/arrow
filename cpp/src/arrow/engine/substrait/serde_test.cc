@@ -47,10 +47,18 @@ const std::shared_ptr<Schema> kBoringSchema = schema({
     field("date64", date64()),
     field("str", utf8()),
     field("list_i32", list(int32())),
-    field("struct_i32_str", struct_({
-                                field("i32", int32()),
-                                field("str", utf8()),
-                            })),
+    field("struct", struct_({
+                        field("i32", int32()),
+                        field("str", utf8()),
+                        field("struct_i32_str",
+                              struct_({field("i32", int32()), field("str", utf8())})),
+                    })),
+    field("list_struct", list(struct_({
+                             field("i32", int32()),
+                             field("str", utf8()),
+                             field("struct_i32_str", struct_({field("i32", int32()),
+                                                              field("str", utf8())})),
+                         }))),
     field("dict_str", dictionary(int32(), utf8())),
     field("dict_i32", dictionary(int32(), int32())),
     field("ts_ns", timestamp(TimeUnit::NANO)),
@@ -415,17 +423,18 @@ TEST(Substrait, FieldRefRoundTrip) {
            // by name
            FieldRef("i32"),
            FieldRef("ts_ns"),
-           FieldRef("struct_i32_str"),
+           FieldRef("struct"),
 
            // by index
            FieldRef(0),
            FieldRef(1),
            FieldRef(kBoringSchema->num_fields() - 1),
-           FieldRef(kBoringSchema->GetFieldIndex("struct_i32_str")),
+           FieldRef(kBoringSchema->GetFieldIndex("struct")),
 
            // nested
-           FieldRef("struct_i32_str", "i32"),
-           FieldRef(kBoringSchema->GetFieldIndex("struct_i32_str"), 1),
+           FieldRef("struct", "i32"),
+           FieldRef("struct", "struct_i32_str", "i32"),
+           FieldRef(kBoringSchema->GetFieldIndex("struct"), 1),
        }) {
     ARROW_SCOPED_TRACE(ref.ToString());
     ASSERT_OK_AND_ASSIGN(auto expr, compute::field_ref(ref).Bind(*kBoringSchema));
@@ -439,12 +448,71 @@ TEST(Substrait, FieldRefRoundTrip) {
   }
 }
 
+TEST(Substrait, RecursiveFieldRef) {
+  FieldRef ref("struct", "str");
+
+  ARROW_SCOPED_TRACE(ref.ToString());
+  ASSERT_OK_AND_ASSIGN(auto expr, compute::field_ref(ref).Bind(*kBoringSchema));
+  ASSERT_OK_AND_ASSIGN(auto serialized, SerializeExpression(expr));
+  auto expected = SubstraitFromJSON("Expression", R"({
+    "selection": {
+      "directReference": {
+        "structField": {
+          "field": 12,
+          "child": {
+            "structField": {
+              "field": 1
+            }
+          }
+        }
+      },
+      "rootReference": {}
+    }
+  })");
+  ASSERT_OK(internal::CheckMessagesEquivalent("Expression", *serialized, *expected));
+}
+
+TEST(Substrait, FieldRefsInExpressions) {
+  ASSERT_OK_AND_ASSIGN(auto expr,
+                       compute::call("struct_field",
+                                     {compute::call("if_else",
+                                                    {
+                                                        compute::literal(true),
+                                                        compute::field_ref("struct"),
+                                                        compute::field_ref("struct"),
+                                                    })},
+                                     compute::StructFieldOptions({0}))
+                           .Bind(*kBoringSchema));
+  ASSERT_OK_AND_ASSIGN(auto serialized, SerializeExpression(expr));
+  auto expected = SubstraitFromJSON("Expression", R"({
+    "selection": {
+      "directReference": {
+        "structField": {
+          "field": 0
+        }
+      },
+      "expression": {
+        "if_then": {
+          "ifs": [
+            {
+              "if": {"literal": {"boolean": true}},
+              "then": {"selection": {"directReference": {"structField": {"field": 12}}}}
+            }
+          ],
+          "else": {"selection": {"directReference": {"structField": {"field": 12}}}}
+        }
+      }
+    }
+  })");
+  ASSERT_OK(internal::CheckMessagesEquivalent("Expression", *serialized, *expected));
+}
+
 TEST(Substrait, CallSpecialCaseRoundTrip) {
   for (compute::Expression expr : {
            compute::call("if_else",
                          {
                              compute::literal(true),
-                             compute::field_ref({"struct_i32_str", 1}),
+                             compute::field_ref({"struct", 1}),
                              compute::field_ref("str"),
                          }),
 
@@ -453,6 +521,31 @@ TEST(Substrait, CallSpecialCaseRoundTrip) {
                              compute::field_ref("list_i32"),
                              compute::literal(3),
                          }),
+
+           compute::call("struct_field",
+                         {compute::call("list_element",
+                                        {
+                                            compute::field_ref("list_struct"),
+                                            compute::literal(42),
+                                        })},
+                         arrow::compute::StructFieldOptions({1})),
+
+           compute::call("struct_field",
+                         {compute::call("list_element",
+                                        {
+                                            compute::field_ref("list_struct"),
+                                            compute::literal(42),
+                                        })},
+                         arrow::compute::StructFieldOptions({2, 0})),
+
+           compute::call("struct_field",
+                         {compute::call("if_else",
+                                        {
+                                            compute::literal(true),
+                                            compute::field_ref("struct"),
+                                            compute::field_ref("struct"),
+                                        })},
+                         compute::StructFieldOptions({0})),
        }) {
     ARROW_SCOPED_TRACE(expr.ToString());
     ASSERT_OK_AND_ASSIGN(expr, expr.Bind(*kBoringSchema));
@@ -465,4 +558,3 @@ TEST(Substrait, CallSpecialCaseRoundTrip) {
 
 }  // namespace engine
 }  // namespace arrow
-

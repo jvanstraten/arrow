@@ -109,7 +109,7 @@ std::shared_ptr<DataType> interval_year() { return IntervalYearType::Make({}); }
 std::shared_ptr<DataType> interval_day() { return IntervalDayType::Make({}); }
 
 bool UnwrapUuid(const DataType& t) {
-  if (auto params = UuidType::GetIf(t)) {
+  if (UuidType::GetIf(t)) {
     return true;
   }
   return false;
@@ -130,14 +130,14 @@ util::optional<int32_t> UnwrapVarChar(const DataType& t) {
 }
 
 bool UnwrapIntervalYear(const DataType& t) {
-  if (auto params = IntervalYearType::GetIf(t)) {
+  if (IntervalYearType::GetIf(t)) {
     return true;
   }
   return false;
 }
 
 bool UnwrapIntervalDay(const DataType& t) {
-  if (auto params = IntervalDayType::GetIf(t)) {
+  if (IntervalDayType::GetIf(t)) {
     return true;
   }
   return false;
