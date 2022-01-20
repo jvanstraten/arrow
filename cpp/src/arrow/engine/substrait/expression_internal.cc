@@ -55,10 +55,11 @@ std::shared_ptr<FixedSizeBinaryScalar> FixedSizeBinaryScalarFromBytes(
 
 }  // namespace
 
-Result<compute::Expression> FromProto(const substrait::Expression& expr) {
+Result<compute::Expression> FromProto(const substrait::Expression& expr,
+                                      const ExtensionSet& ext_set) {
   switch (expr.rex_type_case()) {
     case substrait::Expression::kLiteral: {
-      ARROW_ASSIGN_OR_RAISE(auto datum, FromProto(expr.literal()));
+      ARROW_ASSIGN_OR_RAISE(auto datum, FromProto(expr.literal(), ext_set));
       return compute::literal(std::move(datum));
     }
 
@@ -67,7 +68,7 @@ Result<compute::Expression> FromProto(const substrait::Expression& expr) {
 
       util::optional<compute::Expression> out;
       if (expr.selection().has_expression()) {
-        ARROW_ASSIGN_OR_RAISE(out, FromProto(expr.selection().expression()));
+        ARROW_ASSIGN_OR_RAISE(out, FromProto(expr.selection().expression(), ext_set));
       }
 
       const auto* ref = &expr.selection().direct_reference();
@@ -137,9 +138,9 @@ Result<compute::Expression> FromProto(const substrait::Expression& expr) {
       const auto& if_then = expr.if_then();
       if (!if_then.has_else_()) break;
       if (if_then.ifs_size() != 1) break;
-      ARROW_ASSIGN_OR_RAISE(auto if_, FromProto(if_then.ifs(0).if_()));
-      ARROW_ASSIGN_OR_RAISE(auto then, FromProto(if_then.ifs(0).then()));
-      ARROW_ASSIGN_OR_RAISE(auto else_, FromProto(if_then.else_()));
+      ARROW_ASSIGN_OR_RAISE(auto if_, FromProto(if_then.ifs(0).if_(), ext_set));
+      ARROW_ASSIGN_OR_RAISE(auto then, FromProto(if_then.ifs(0).then(), ext_set));
+      ARROW_ASSIGN_OR_RAISE(auto else_, FromProto(if_then.else_(), ext_set));
       return compute::call("if_else",
                            {std::move(if_), std::move(then), std::move(else_)});
     }
@@ -152,7 +153,7 @@ Result<compute::Expression> FromProto(const substrait::Expression& expr) {
 
       std::vector<compute::Expression> arguments(scalar_fn.args_size());
       for (size_t i = 0; i < arguments.size(); ++i) {
-        ARROW_ASSIGN_OR_RAISE(arguments[i], FromProto(scalar_fn.args(i)));
+        ARROW_ASSIGN_OR_RAISE(arguments[i], FromProto(scalar_fn.args(i), ext_set));
       }
 
       return compute::call(id.name.to_string(), std::move(arguments));
@@ -166,15 +167,14 @@ Result<compute::Expression> FromProto(const substrait::Expression& expr) {
                                 expr.DebugString());
 }
 
-Result<Datum> FromProto(const substrait::Expression::Literal& lit) {
+Result<Datum> FromProto(const substrait::Expression::Literal& lit,
+                        const ExtensionSet& ext_set) {
   if (lit.nullable()) {
     // FIXME not sure how this field should be interpreted and there's no way to round
     // trip it through arrow
     return Status::Invalid(
         "Nullable Literals - Literal.nullable must be left at the default");
   }
-
-  ExtensionSet ext_set;
 
   switch (lit.literal_type_case()) {
     case substrait::Expression::Literal::kBoolean:
@@ -269,7 +269,7 @@ Result<Datum> FromProto(const substrait::Expression::Literal& lit) {
       ScalarVector fields(struct_.fields_size());
       std::vector<std::string> field_names(fields.size(), "");
       for (size_t i = 0; i < fields.size(); ++i) {
-        ARROW_ASSIGN_OR_RAISE(auto field, FromProto(struct_.fields(i)));
+        ARROW_ASSIGN_OR_RAISE(auto field, FromProto(struct_.fields(i), ext_set));
         DCHECK(field.is_scalar());
         fields[i] = field.scalar();
       }
@@ -290,7 +290,7 @@ Result<Datum> FromProto(const substrait::Expression::Literal& lit) {
 
       ScalarVector values(list.values_size());
       for (size_t i = 0; i < values.size(); ++i) {
-        ARROW_ASSIGN_OR_RAISE(auto value, FromProto(list.values(i)));
+        ARROW_ASSIGN_OR_RAISE(auto value, FromProto(list.values(i), ext_set));
         DCHECK(value.is_scalar());
         values[i] = value.scalar();
         if (element_type) {
@@ -329,8 +329,8 @@ Result<Datum> FromProto(const substrait::Expression::Literal& lit) {
           return Status::Invalid("While converting to MapScalar encountered missing ",
                                  missing, " in ", map.DebugString());
         }
-        ARROW_ASSIGN_OR_RAISE(auto key, FromProto(kv.key()));
-        ARROW_ASSIGN_OR_RAISE(auto value, FromProto(kv.value()));
+        ARROW_ASSIGN_OR_RAISE(auto key, FromProto(kv.key(), ext_set));
+        ARROW_ASSIGN_OR_RAISE(auto value, FromProto(kv.value(), ext_set));
 
         DCHECK(key.is_scalar());
         DCHECK(value.is_scalar());
@@ -524,8 +524,8 @@ struct ToProtoImpl {
     values->Reserve(static_cast<int>(s.value->length()));
 
     for (int64_t i = 0; i < s.value->length(); ++i) {
-      ARROW_ASSIGN_OR_RAISE(auto scalar, s.value->GetScalar(i));
-      ARROW_ASSIGN_OR_RAISE(auto lit, ToProto(Datum(std::move(scalar))));
+      ARROW_ASSIGN_OR_RAISE(Datum list_element, s.value->GetScalar(i));
+      ARROW_ASSIGN_OR_RAISE(auto lit, ToProto(list_element, ext_set_));
       values->AddAllocated(lit.release());
     }
     return Status::OK();
@@ -538,7 +538,7 @@ struct ToProtoImpl {
     fields->Reserve(static_cast<int>(s.value.size()));
 
     for (Datum field : s.value) {
-      ARROW_ASSIGN_OR_RAISE(auto lit, ToProto(field));
+      ARROW_ASSIGN_OR_RAISE(auto lit, ToProto(field, ext_set_));
       fields->AddAllocated(lit.release());
     }
     return Status::OK();
@@ -567,11 +567,11 @@ struct ToProtoImpl {
       auto kv = internal::make_unique<Lit::Map::KeyValue>();
 
       ARROW_ASSIGN_OR_RAISE(Datum key_scalar, kv_arr.field(0)->GetScalar(i));
-      ARROW_ASSIGN_OR_RAISE(auto key, ToProto(key_scalar));
+      ARROW_ASSIGN_OR_RAISE(auto key, ToProto(key_scalar, ext_set_));
       kv->set_allocated_key(key.release());
 
       ARROW_ASSIGN_OR_RAISE(Datum value_scalar, kv_arr.field(1)->GetScalar(i));
-      ARROW_ASSIGN_OR_RAISE(auto value, ToProto(value_scalar));
+      ARROW_ASSIGN_OR_RAISE(auto value, ToProto(value_scalar, ext_set_));
       kv->set_allocated_value(value.release());
 
       key_values->AddAllocated(kv.release());
@@ -641,10 +641,12 @@ struct ToProtoImpl {
   Status operator()(const Scalar& scalar) { return VisitScalarInline(scalar, this); }
 
   substrait::Expression::Literal* lit_;
+  ExtensionSet* ext_set_;
 };
 }  // namespace
 
-Result<std::unique_ptr<substrait::Expression::Literal>> ToProto(const Datum& datum) {
+Result<std::unique_ptr<substrait::Expression::Literal>> ToProto(const Datum& datum,
+                                                                ExtensionSet* ext_set) {
   if (!datum.is_scalar()) {
     return Status::NotImplemented("representing ", datum.ToString(),
                                   " as a substrait::Expression::Literal");
@@ -653,7 +655,7 @@ Result<std::unique_ptr<substrait::Expression::Literal>> ToProto(const Datum& dat
   auto out = internal::make_unique<substrait::Expression::Literal>();
 
   if (datum.scalar()->is_valid) {
-    RETURN_NOT_OK((ToProtoImpl{out.get()})(*datum.scalar()));
+    RETURN_NOT_OK((ToProtoImpl{out.get(), ext_set})(*datum.scalar()));
   } else {
     ExtensionSet ext_set;
     ARROW_ASSIGN_OR_RAISE(auto type, ToProto(*datum.type(), /*nullable=*/true, &ext_set));
@@ -772,7 +774,8 @@ static Result<std::unique_ptr<substrait::Expression>> MakeListElementReference(
   return MakeDirectReference(std::move(expr), std::move(ref_segment));
 }
 
-Result<std::unique_ptr<substrait::Expression>> ToProto(const compute::Expression& expr) {
+Result<std::unique_ptr<substrait::Expression>> ToProto(const compute::Expression& expr,
+                                                       ExtensionSet* ext_set) {
   if (!expr.IsBound()) {
     return Status::Invalid("ToProto requires a bound Expression");
   }
@@ -780,7 +783,7 @@ Result<std::unique_ptr<substrait::Expression>> ToProto(const compute::Expression
   auto out = internal::make_unique<substrait::Expression>();
 
   if (auto datum = expr.literal()) {
-    ARROW_ASSIGN_OR_RAISE(auto literal, ToProto(*datum));
+    ARROW_ASSIGN_OR_RAISE(auto literal, ToProto(*datum, ext_set));
     out->set_allocated_literal(literal.release());
     return std::move(out);
   }
@@ -801,7 +804,7 @@ Result<std::unique_ptr<substrait::Expression>> ToProto(const compute::Expression
   // convert all arguments first
   std::vector<std::unique_ptr<substrait::Expression>> arguments(call->arguments.size());
   for (size_t i = 0; i < arguments.size(); ++i) {
-    ARROW_ASSIGN_OR_RAISE(arguments[i], ToProto(call->arguments[i]));
+    ARROW_ASSIGN_OR_RAISE(arguments[i], ToProto(call->arguments[i], ext_set));
   }
 
   if (call->function_name == "struct_field") {
